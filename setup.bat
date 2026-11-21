@@ -3,8 +3,6 @@ chcp 65001 >nul
 set "ROOT=%~dp0"
 set "ENGINE=%ROOT%engine"
 set "WANT=3.13.17"
-set "REPO_URL=https://github.com/86har/modal"
-set "TMP_REPO=%ENGINE%\_repo"
 cd /d "%ROOT%"
 
 REM ===== 0. config.json の作成(無い場合のみ) =====
@@ -59,38 +57,14 @@ set "PS=%PS% & '%VPY%' -m modal secret create krea2-tokens ('CIVITAI_TOKEN='+$tp
 set "PS=%PS% exit $LASTEXITCODE"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "%PS%" || goto :error
 
-REM ===== 6. GitHub から取得 =====
-if exist "%TMP_REPO%" rmdir /s /q "%TMP_REPO%"
-if exist "%ENGINE%\_zip_tmp" rmdir /s /q "%ENGINE%\_zip_tmp"
-
-where git >nul 2>&1
-if %errorlevel%==0 (
-    git clone --depth 1 %REPO_URL% "%TMP_REPO%" || goto :error
-) else (
-    echo git が無いため zip で取得します...
-    call :download_zip main
-    if not exist "%TMP_REPO%" call :download_zip master
-    if not exist "%TMP_REPO%" (
-        echo リポジトリの取得に失敗しました。
-        goto :error
-    )
-)
-
-REM ===== 7. engine フォルダへ配置 =====
-robocopy "%TMP_REPO%" "%ENGINE%" /E /IS /IT /XD .git /XF setup.bat update.bat run.bat /NFL /NDL /NJH /NJS /NP >nul
-if errorlevel 8 goto :error
-rmdir /s /q "%TMP_REPO%"
+REM ===== 6. GitHub から取得 → engine へ配置 → config.json 参照パッチ =====
+REM (update.bat と同じ処理を呼び出します)
+call "%ROOT%update.bat" nopause || goto :error
 
 echo.
 echo 完了しました。run.bat で起動できます。
 pause
 exit /b 0
-
-:download_zip
-powershell -NoProfile -Command "try { Invoke-WebRequest '%REPO_URL%/archive/refs/heads/%1.zip' -OutFile '%ENGINE%\repo.zip' -ErrorAction Stop; Expand-Archive '%ENGINE%\repo.zip' -DestinationPath '%ENGINE%\_zip_tmp' -Force; $d=(Get-ChildItem '%ENGINE%\_zip_tmp' -Directory | Select-Object -First 1).FullName; Move-Item $d '%TMP_REPO%'; exit 0 } catch { Write-Host $_; exit 1 }"
-if exist "%ENGINE%\repo.zip" del "%ENGINE%\repo.zip"
-if exist "%ENGINE%\_zip_tmp" rmdir /s /q "%ENGINE%\_zip_tmp"
-exit /b
 
 :error
 echo.

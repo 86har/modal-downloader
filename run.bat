@@ -27,8 +27,11 @@ set "PYTHONUTF8=1"
 set "VIRTUAL_ENV=%ENGINE%\venv"
 set "PATH=%ENGINE%\venv\Scripts;%PATH%"
 
-for %%F in ("%GEN%") do cd /d "%%~dpF"
-python "%GEN%" %*
+for %%F in ("%GEN%") do set "GENDIR=%%~dpF"
 
-echo.
-pause
+REM batファイルを経由せず「cmd /c」で起動する。
+REM (batファイル実行中に Ctrl+C を押すと出る「Terminate batch job (Y/N)?」を避けるため)
+REM 正常終了したらウィンドウは自動で閉じ、エラー終了のときだけ内容を確認できるよう一時停止する
+set CMDLINE="%ENGINE%\venv\Scripts\python.exe" "%GEN%" %*
+start "Krea" /D "%GENDIR%" cmd /c "%CMDLINE% || pause"
+exit /b 0
