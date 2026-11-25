@@ -88,7 +88,6 @@ exit /b 1
 #PS#function ToPlain($s) { [System.Net.NetworkCredential]::new('', $s).Password }
 #PS#function AskYN($msg) { $a = Read-Host "$msg [y/N]"; return ($a -match '^[yY]') }
 #PS#
-#PS## ---- CivitAI トークン検証 ----
 #PS#function Test-Civitai($tok) {
 #PS#  try {
 #PS#    Invoke-RestMethod -Uri 'https://civitai.com/api/v1/me' -Headers @{ Authorization = "Bearer $tok" } -TimeoutSec 20 | Out-Null
@@ -100,7 +99,6 @@ exit /b 1
 #PS#  }
 #PS#}
 #PS#
-#PS## ---- CivitAI ----
 #PS#while ($true) {
 #PS#  $tp = ToPlain (Read-Host 'CivitAI トークン')
 #PS#  Write-Host 'CivitAI トークンを確認中...'
@@ -111,10 +109,8 @@ exit /b 1
 #PS#  if (AskYN 'このまま登録しますか') { break }
 #PS#}
 #PS#
-#PS## ---- MEGA（認証・検証なし） ----
 #PS#$e = (Read-Host 'MEGA メールアドレス').Trim()
 #PS#$pp = ToPlain (Read-Host 'MEGA パスワード')
 #PS#
-#PS## ---- modal secret 登録 ----
 #PS#& $vpy -m modal secret create krea2-tokens ('CIVITAI_TOKEN=' + $tp) ('MEGA_EMAIL=' + $e) ('MEGA_PASS=' + $pp) --force
 #PS#exit $LASTEXITCODE
