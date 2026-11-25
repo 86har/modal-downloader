@@ -4,10 +4,6 @@ chcp 65001 >nul
 set "ROOT=%~dp0"
 set "ENGINE=%ROOT%engine"
 set "REPO_URL=https://github.com/86har/modal-app"
-REM 最新版がデフォルトブランチ以外にある場合はここにブランチ名を指定 (例: set "REPO_BRANCH=dev")
-set "REPO_BRANCH="
-set "BRANCH_OPT="
-if defined REPO_BRANCH set "BRANCH_OPT=--branch %REPO_BRANCH%"
 set "TMP_REPO=%ENGINE%\_repo"
 cd /d "%ROOT%"
 
@@ -16,46 +12,37 @@ if not exist "%ENGINE%" (
     goto :error
 )
 
-REM ===== 0. パッチスクリプトを先に展開 (zip取得でも使うため) =====
-set "VPY=%ENGINE%\venv\Scripts\python.exe"
-if not exist "%VPY%" set "VPY=py -3"
-powershell -NoProfile -Command "$t=[IO.File]::ReadAllText('%~f0',[Text.Encoding]::UTF8); $i=$t.IndexOf('#PY_'+'BEGIN'); [IO.File]::WriteAllText('%ENGINE%\_patch.py',$t.Substring($i),(New-Object Text.UTF8Encoding($false)))" || goto :error
-
 REM ===== 1. 最新ファイルを一時フォルダへ取得 =====
-call :cleanup_tmp
-if exist "%TMP_REPO%" (
-    echo 一時フォルダを削除できませんでした: %TMP_REPO%
-    goto :error
-)
+if exist "%TMP_REPO%" rmdir /s /q "%TMP_REPO%"
+if exist "%ENGINE%\_zip_tmp" rmdir /s /q "%ENGINE%\_zip_tmp"
 
-set "FETCHED="
 where git >nul 2>&1
 if %errorlevel%==0 (
-    echo git で最新版を取得します...
-    git clone --depth 1 --no-tags %BRANCH_OPT% %REPO_URL% "%TMP_REPO%"
-    if not errorlevel 1 set "FETCHED=1"
-    if not defined FETCHED (
-        echo git での取得に失敗しました。zip で再試行します...
-        call :cleanup_tmp
+    echo git で取得します...
+    git clone --depth 1 %REPO_URL% "%TMP_REPO%" || goto :error
+) else (
+    echo git が無いため zip で取得します...
+    call :download_zip main
+    if not exist "%TMP_REPO%" call :download_zip master
+    if not exist "%TMP_REPO%" (
+        echo リポジトリの取得に失敗しました。
+        goto :error
     )
 )
-if not defined FETCHED (
-    echo zip で最新版を取得します...
-    %VPY% "%ENGINE%\_patch.py" fetch %REPO_URL% "%TMP_REPO%" %REPO_BRANCH%
-    if not errorlevel 1 set "FETCHED=1"
-)
-if not defined FETCHED (
-    echo リポジトリの取得に失敗しました。
-    goto :error
-)
-if exist "%TMP_REPO%\.git" git -C "%TMP_REPO%" log -1 --format="取得したコミット: %%h %%ad %%s" --date=iso
-if exist "%TMP_REPO%\.git" for /f %%b in ('git -C "%TMP_REPO%" rev-parse --abbrev-ref HEAD') do echo 取得したブランチ: %%b
 
 REM ===== 2. 配置 (engine\modal / engine\extention) とパッチ適用 =====
 REM リポジトリ内の構成が違っても、gen.py のあるフォルダを engine\modal へ、
 REM extention フォルダを engine\extention へ置き、重複したファイルは整理します。
 REM venv・config.json・secrets*.json には触れません。
+set "VPY=%ENGINE%\venv\Scripts\python.exe"
+if not exist "%VPY%" set "VPY=py -3"
+powershell -NoProfile -Command "$t=[IO.File]::ReadAllText('%~f0',[Text.Encoding]::UTF8); $i=$t.IndexOf('#PY_'+'BEGIN'); [IO.File]::WriteAllText('%ENGINE%\_patch.py',$t.Substring($i),(New-Object Text.UTF8Encoding($false)))" || goto :error
+
 %VPY% "%ENGINE%\_patch.py" place "%ENGINE%" "%TMP_REPO%"
+if errorlevel 1 goto :place_failed
+
+REM runner フォルダの bat (run / setup / deploy_and_run / update) を ROOT へ上書き
+%VPY% "%ENGINE%\_patch.py" runner "%ROOT:~0,-1%" "%TMP_REPO%"
 if errorlevel 1 goto :place_failed
 rmdir /s /q "%TMP_REPO%"
 
@@ -68,19 +55,23 @@ if not "%PATCH_RC%"=="0" goto :error
 echo.
 echo 更新が完了しました。
 if /i not "%~1"=="nopause" pause
+
+REM 実行中の update.bat 自身は直接上書きできないため、終了と同時に差し替える
+if exist "%ROOT%update.bat.new" (
+    (goto) 2>nul & move /y "%ROOT%update.bat.new" "%~f0" >nul
+)
 exit /b 0
 
-:cleanup_tmp
-if exist "%TMP_REPO%" rmdir /s /q "%TMP_REPO%"
-if exist "%ENGINE%\_zip_tmp" rmdir /s /q "%ENGINE%\_zip_tmp"
+:download_zip
+powershell -NoProfile -Command "try { Invoke-WebRequest '%REPO_URL%/archive/refs/heads/%1.zip' -OutFile '%ENGINE%\repo.zip' -ErrorAction Stop; Expand-Archive '%ENGINE%\repo.zip' -DestinationPath '%ENGINE%\_zip_tmp' -Force; $d=(Get-ChildItem '%ENGINE%\_zip_tmp' -Directory | Select-Object -First 1).FullName; Move-Item $d '%TMP_REPO%'; exit 0 } catch { Write-Host $_; exit 1 }"
 if exist "%ENGINE%\repo.zip" del "%ENGINE%\repo.zip"
-exit /b 0
+if exist "%ENGINE%\_zip_tmp" rmdir /s /q "%ENGINE%\_zip_tmp"
+exit /b
 
 :place_failed
 del "%ENGINE%\_patch.py" >nul 2>&1
 
 :error
-del "%ENGINE%\_patch.py" >nul 2>&1
 echo.
 echo エラーが発生したため中断しました。
 pause
@@ -88,16 +79,10 @@ exit /b 1
 
 #PY_BEGIN
 # update.bat から自動展開されるパッチスクリプト(何度実行しても同じ結果になります)
-import hashlib
-import json
 import os
 import re
 import shutil
 import sys
-import tempfile
-import time
-import urllib.request
-import zipfile
 from pathlib import Path
 
 
@@ -216,7 +201,7 @@ def do_patch(ENGINE):
 ALWAYS_IGNORE = {".git", "__pycache__", "venv"}
 # リポジトリ直下に置かれていても engine\modal へは入れないもの
 TOP_IGNORE = {"engine", "extention", "extension", "_repo", "config.json",
-              "setup.bat", "update.bat", "run.bat"}
+              "setup.bat", "update.bat", "run.bat", "deploy_and_run.bat", "runner"}
 
 
 def shallowest(root, want_dir, names):
@@ -244,59 +229,6 @@ def copy_tree(src, dst, top_ignore=()):
             shutil.copy2(item, target)
 
 
-PRUNE_EXT = {".py", ".html", ".js", ".css", ".txt", ".md"}
-
-
-def list_files(src, top_ignore=()):
-    """copy_tree がコピーする相対パスの一覧"""
-    out = set()
-    def walk(d, rel, top):
-        for item in d.iterdir():
-            if item.name in ALWAYS_IGNORE or (top and item.name in top_ignore):
-                continue
-            r = rel / item.name
-            if item.is_dir():
-                walk(item, r, False)
-            else:
-                out.add(r)
-    walk(src, Path(), True)
-    return out
-
-
-def prune_stale(src, dst, top_ignore=()):
-    """リポジトリ側に無い古いソース類を dst から削除(出力フォルダ・secrets・config は対象外)"""
-    if not dst.is_dir():
-        return
-    expected = list_files(src, top_ignore)
-    for dirpath, dirnames, filenames in os.walk(dst):
-        dirnames[:] = [d for d in dirnames
-                       if d not in ALWAYS_IGNORE and not d.lower().startswith("output")]
-        for f in filenames:
-            p = Path(dirpath) / f
-            if p.relative_to(dst) in expected or p.suffix.lower() not in PRUNE_EXT:
-                continue
-            p.unlink()
-            print(f"[place] 古いファイルを削除しました: {p}")
-    for c in list(dst.rglob("__pycache__")):
-        shutil.rmtree(c, ignore_errors=True)
-
-
-def verify(src, dst, top_ignore=()):
-    """コピー後、リポジトリのファイルと内容が一致するか確認"""
-    bad = []
-    files = list_files(src, top_ignore)
-    for rel in files:
-        if rel.name.startswith("secrets") and rel.suffix == ".json":
-            continue
-        a, b = src / rel, dst / rel
-        if not b.is_file() or hashlib.sha256(a.read_bytes()).digest() != hashlib.sha256(b.read_bytes()).digest():
-            bad.append(rel)
-    for rel in bad:
-        print(f"[place] 内容が一致しません: {dst / rel}")
-    print(f"[place] 検証: {len(files) - len(bad)}/{len(files)} ファイル一致 ({dst})")
-    return not bad
-
-
 def remove(path):
     if path.is_dir():
         shutil.rmtree(path)
@@ -313,27 +245,18 @@ def do_place(engine, repo):
     if gen is None:
         print("[place] リポジトリ内に gen.py が見つかりません")
         return 1
-    all_gens = [p for p in repo.rglob("gen.py") if not set(p.parts) & ALWAYS_IGNORE]
-    if len(all_gens) > 1:
-        print("[place] 注意: リポジトリ内に gen.py が複数あります。最も浅いものを使います:")
-        for g in all_gens:
-            print(f"        {g.relative_to(repo)}")
     src_modal = gen.parent
     ignore = set(TOP_IGNORE)
     if src_modal == repo:
         ignore.add("modal")       # 直下に gen.py がある場合、内側の modal は重複
-    prune_stale(src_modal, engine / "modal", ignore)
     copy_tree(src_modal, engine / "modal", ignore)
-    ok = verify(src_modal, engine / "modal", ignore)
     print(f"[place] {src_modal.relative_to(repo) if src_modal != repo else '(リポジトリ直下)'} -> engine\\modal")
 
     ext = shallowest(repo, True, {"extention", "extension"})
     if ext is None:
         print("[place] extention フォルダが見つかりません(スキップ)")
     else:
-        prune_stale(ext, engine / "extention")
         copy_tree(ext, engine / "extention")
-        ok = verify(ext, engine / "extention") and ok
         print(f"[place] {ext.relative_to(repo)} -> engine\\extention")
 
     # 以前の版で engine 直下や modal の中に重複してできたものを整理
@@ -345,66 +268,32 @@ def do_place(engine, repo):
         d = engine / rel
         if d.is_dir() and all(f.name == ".gitkeep" for f in d.rglob("*") if f.is_file()):
             remove(d)
-    return 0 if ok else 1
+    return 0
 
 
-def _http_get(url, accept=None):
-    headers = {
-        "User-Agent": "modal-updater",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-    if accept:
-        headers["Accept"] = accept
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return r.read()
-
-
-def do_fetch(repo_url, dest, branch=""):
-    """git が無い/失敗した場合の zip 取得。最新コミットの SHA を解決して
-    SHA 固定の zip を取るので、CDN のキャッシュや main/master の違いに左右されない。"""
-    slug = "/".join(repo_url.rstrip("/").removesuffix(".git").split("/")[-2:])
-    urls = []
-    try:
-        sha = _http_get(f"https://api.github.com/repos/{slug}/commits/{branch or 'HEAD'}",
-                        "application/vnd.github.sha").decode().strip()
-        print(f"[fetch] 最新コミット: {sha[:7]}")
-        urls.append(f"https://github.com/{slug}/archive/{sha}.zip")
-    except Exception as e:
-        print(f"[fetch] 最新コミットの取得に失敗(ブランチ指定に切替): {e}")
-    t = int(time.time())
-    urls += [f"https://github.com/{slug}/archive/refs/heads/{b}.zip?t={t}"
-             for b in ((branch,) if branch else ("main", "master"))]
-
-    dest = Path(dest)
-    for url in urls:
-        try:
-            data = _http_get(url)
-            tmp = Path(tempfile.mkdtemp(prefix="modal_zip_"))
-            zpath = tmp / "repo.zip"
-            zpath.write_bytes(data)
-            with zipfile.ZipFile(zpath) as z:
-                z.extractall(tmp / "x")
-            top = [d for d in (tmp / "x").iterdir() if d.is_dir()]
-            if not top:
-                raise RuntimeError("zip の中身が空です")
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.move(str(top[0]), str(dest))
-            shutil.rmtree(tmp, ignore_errors=True)
-            print(f"[fetch] 取得しました: {url}")
-            return 0
-        except Exception as e:
-            print(f"[fetch] 失敗: {url}: {e}")
-    return 1
+def do_runner(root, repo):
+    d = shallowest(repo, True, {"runner"})
+    if d is None:
+        print("[runner] runner フォルダが見つかりません(スキップ)")
+        return 0
+    for name in ("run.bat", "update.bat", "setup.bat", "deploy_and_run.bat"):
+        src = d / name
+        if not src.is_file():
+            print(f"[runner] {name} がありません(スキップ)")
+            continue
+        text = src.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\n", "\r\n")
+        # update.bat は実行中なので .new として置き、終了時に差し替える
+        dst = root / ("update.bat.new" if name == "update.bat" else name)
+        dst.write_bytes(text.encode("utf-8"))
+        print(f"[runner] {name} を更新しました")
+    return 0
 
 
 if __name__ == "__main__":
     mode = sys.argv[1]
     if mode == "place":
         sys.exit(do_place(Path(sys.argv[2]), Path(sys.argv[3])))
+    elif mode == "runner":
+        sys.exit(do_runner(Path(sys.argv[2]), Path(sys.argv[3])))
     elif mode == "patch":
         sys.exit(do_patch(Path(sys.argv[2])))
-    elif mode == "fetch":
-        sys.exit(do_fetch(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ""))

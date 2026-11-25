@@ -28,7 +28,7 @@ if not defined FOUND (
     echo Python 3.13 が見つかりません。インストールしてください。
     goto :error
 )
-echo 検出済 Python: %FOUND%
+echo 検出 Python: %FOUND%
 if not "%FOUND%"=="%WANT%" (
     echo ※ 指定は %WANT% ですが %FOUND% が使われます。
     choice /c YN /m "続行しますか"
